@@ -1,0 +1,27 @@
+# models/configs/yolov8s.yaml
+# Config สำหรับ convert yolov8s → .bin บน RDK X5
+
+model_parameters:
+  onnx_model: "../onnx/yolov8s.onnx"
+  output_model_file_prefix: "yolov8s"
+  march: "bayes-e"              # RDK X5 ใช้ Bayes architecture
+
+input_parameters:
+  input_name: "images"
+  input_shape: "1x3x640x640"
+  input_type_rt: "nv12"         # กล้องส่งมาเป็น NV12
+  input_layout_rt: "NHWC"
+  input_type_train: "rgb"
+  input_layout_train: "NCHW"
+  norm_type: "data_scale"
+  scale_value: 0.003921568627   # 1/255
+
+calibration_parameters:
+  cal_data_dir: "../../data/datasets/calibration"
+  calibration_type: "default"
+  max_iter: 64
+
+compiler_parameters:
+  compile_mode: "latency"
+  debug: false
+  optimize_level: "O3"

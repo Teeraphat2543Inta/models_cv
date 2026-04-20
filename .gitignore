@@ -1,0 +1,20 @@
+# Models (ไฟล์ใหญ่ ไม่ต้อง commit)
+models/onnx/*.onnx
+models/bin/*.bin
+*.pt
+
+# Data
+data/datasets/
+data/test_images/
+
+# Output
+output/logs/
+output/results/
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# macOS
+.DS_Store
