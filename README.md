@@ -275,7 +275,74 @@ age    = int(output[0][1] * 100)
 
 ---
 
-## Performance Summary
+#---
+
+### 5. Lightweight Head Pose Estimation — Yaw / Pitch / Roll
+
+| Parameter | Value |
+|-----------|-------|
+| **File** | `models/bin/headpose.bin` |
+| **Source** | [Shaw-git/Lightweight-Head-Pose-Estimation](https://github.com/Shaw-git/Lightweight-Head-Pose-Estimation) via PINTO Model Zoo |
+| **Task** | Head Pose Estimation — yaw, pitch, roll angles |
+| **Architecture** | Lightweight MobileNet-based regression network |
+| **Input Name** | `input` |
+| **Input Shape** | `1 × 3 × 224 × 224` |
+| **Input Type (Runtime)** | NV12 — cropped face region |
+| **Input Type (Training)** | RGB, NCHW |
+| **Output Names** | `roll`, `yaw`, `pitch` |
+| **Output Shape** | `[1]` each — scalar angle in degrees |
+| **Output Range** | yaw: ±90°, pitch: ±90°, roll: ±90° |
+| **Normalization** | `pixel / 255.0` (data_scale = 0.003921568627) |
+| **ONNX Opset** | 11 |
+| **Producer** | PyTorch v1.11.0 |
+| **BPU March** | bayes-e |
+| **Optimize Level** | O3 |
+| **Compile Mode** | latency |
+| **Subgraphs** | 4 (main BPU + 3 post-process BPU) |
+| **Cosine Similarity (roll)** | **1.000000** 🔥 |
+| **Cosine Similarity (yaw)** | **1.000000** 🔥 |
+| **Cosine Similarity (pitch)** | **1.000000** 🔥 |
+| **BPU FPS (main subgraph)** | ~6,878 FPS |
+| **BPU Latency (main subgraph)** | ~145 microseconds |
+| **File Size (.bin)** | 454 KB |
+| **Calibration Dataset** | 54 images at 224×224 (COCO val2017 + random) |
+| **Calibration Method** | kl (num_bin=1024, max_num_bin=16384) |
+| **DataType** | int8 (BPU), float32 (CPU: Softmax × 3) |
+
+**CPU Nodes (run on ARM CPU):**
+- `Softmax_140` — softmax for yaw bins
+- `Softmax_144` — softmax for pitch bins
+- `Softmax_148` — softmax for roll bins
+
+**Angle Interpretation:**
+```
+yaw   > 0° → head turning right
+yaw   < 0° → head turning left
+pitch > 0° → head tilting up
+pitch < 0° → head tilting down
+roll  > 0° → head tilting right
+roll  < 0° → head tilting left
+```
+
+**Attention Detection Logic:**
+```python
+# Crop face first using yolov8n-face output
+x1, y1, x2, y2 = face_bbox
+face_crop = image[y1:y2, x1:x2]
+face_crop = cv2.resize(face_crop, (224, 224))
+face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
+
+# Run inference
+output = model.infer(face_crop)
+yaw   = output['yaw']    # degrees
+pitch = output['pitch']  # degrees
+roll  = output['roll']   # degrees
+
+# Determine if person is looking at shelf
+looking_at_shelf = abs(yaw) < 30 and abs(pitch) < 30
+```
+
+**Performance Summary:**
 
 | Model | Task | Cosine Sim | FPS | Latency | Size |
 |-------|------|-----------|-----|---------|------|
@@ -283,6 +350,7 @@ age    = int(output[0][1] * 100)
 | yolov8n-face.bin | Face Detection | 0.999706 | ~100+ | <10 ms | 4.9 MB |
 | yolov8s-pose.bin | Pose Estimation | 0.999903 | ~21 | ~47.3 ms | 15 MB |
 | genderage.bin | Age + Gender | 0.995687 | ~10,116 | ~0.1 ms | 579 KB |
+| headpose.bin | Head Pose | **1.000000** | ~6,878 | ~0.145 ms | 454 KB |
 
 > All models run on BPU (Bayes-E). CPU nodes are minimal and run on ARM Cortex-A55.
 
