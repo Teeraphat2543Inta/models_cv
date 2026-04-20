@@ -39,40 +39,6 @@ Retail shelf analytics — detecting people walking past, measuring attention (h
 
 ---
 
-## Pipeline Overview
-
-```
-Pi Camera Module 2
-  NV12 stream (640x640)
-        │
-        ▼
-┌───────────────────────────────┐
-│  Stage 1: Detection           │
-│  ├─ YOLOv8s      → Person BBox + Track ID │
-│  └─ YOLOv8n-face → Face BBox + Landmarks  │
-└───────────────────────────────┘
-        │
-   ┌────┴────┐
-   ▼         ▼
-┌──────────────┐   ┌──────────────────────┐
-│   Stage 2a   │   │      Stage 2b        │
-│ YOLOv8s-pose │   │  InsightFace         │
-│ 17 Keypoints │   │  Age + Gender        │
-│ Body pose    │   │  from face crop      │
-└──────────────┘   └──────────────────────┘
-        │                   │
-        └────────┬───────────┘
-                 ▼
-        📊 Analytics Output
-        - Traffic count
-        - Attention rate (% who looked)
-        - Dwell time per person
-        - Age/Gender demographics
-        - Pose-based engagement score
-```
-
----
-
 ## Models
 
 ### 1. YOLOv8s — Person Detection
@@ -507,7 +473,75 @@ fear       → uncomfortable 😨
 
 ---
 
-## Final Complete Model Summary
+---
+
+### 8. CSRNet — Crowd Density Estimation
+
+| Parameter | Value |
+|-----------|-------|
+| **File** | `models/bin/csrnet.bin` |
+| **Source** | [leeyeehoo/CSRNet-pytorch](https://github.com/leeyeehoo/CSRNet-pytorch) via PINTO Model Zoo 400_CSRNet |
+| **Task** | Crowd Density Estimation — generate density map + people count |
+| **Architecture** | CSRNet (Congested Scene Recognition Network) |
+| **Training Dataset** | ShanghaiTech Part A + Part B |
+| **Input Name** | `input` |
+| **Input Shape** | `1 × 3 × 320 × 320` |
+| **Input Type (Runtime)** | NV12 — full frame from camera |
+| **Input Type (Training)** | RGB, NCHW |
+| **Output Name** | `output` |
+| **Output Shape** | `1 × 3 × 320 × 320` |
+| **Output Format** | Density map — sum of all pixel values = estimated people count |
+| **Normalization** | `pixel / 255.0` (data_scale = 0.003921568627) |
+| **ONNX Opset** | 11 |
+| **Producer** | PyTorch v2.1.0 |
+| **BPU March** | bayes-e |
+| **Optimize Level** | O3 |
+| **Compile Mode** | latency |
+| **Subgraphs** | 1 (fully on BPU) |
+| **Cosine Similarity** | **0.995526** 🟢 |
+| **BPU FPS** | ~224 FPS |
+| **BPU Latency** | ~4.4 ms |
+| **File Size (.bin)** | 514 KB |
+| **Calibration Dataset** | 54 images at 320×320 (COCO val2017 + random) |
+| **Calibration Method** | max-percentile (percentile = 0.99995) |
+| **DataType** | int8 (BPU, fully on BPU) |
+
+**Note:** Original model input is 640×640 but forced to 320×320 to fit memory constraints. For production use, consider using the native 640×640 model on a device with more RAM.
+
+**How to get people count from density map:**
+```python
+# Run inference
+density_map = model.infer(frame)  # shape: [1, 3, 320, 320]
+
+# Sum density map to get people count
+# Use only first channel (they are identical)
+count = density_map[0][0].sum()
+print(f"Estimated people count: {count:.1f}")
+```
+
+**Zone-based density analysis:**
+```python
+import numpy as np
+
+density = density_map[0][0]  # shape: [320, 320]
+
+# Divide into zones (e.g., 4 zones for shelf sections)
+h, w = density.shape
+zones = {
+    'top_left':     density[:h//2, :w//2].sum(),
+    'top_right':    density[:h//2, w//2:].sum(),
+    'bottom_left':  density[h//2:, :w//2].sum(),
+    'bottom_right': density[h//2:, w//2:].sum(),
+}
+
+# Find busiest zone
+busiest = max(zones, key=zones.get)
+print(f"Busiest zone: {busiest} ({zones[busiest]:.1f} people)")
+```
+
+---
+
+## Final Complete Model Summary (8 Models)
 
 | # | Model | Task | Cosine Sim | FPS | Latency | Size |
 |---|-------|------|-----------|-----|---------|------|
@@ -518,52 +552,58 @@ fear       → uncomfortable 😨
 | 5 | headpose.bin | Head Pose (yaw/pitch/roll) | 1.000000 | ~6,878 | ~0.145 ms | 454 KB |
 | 6 | osnet_reid.bin | Person Re-ID (512-dim) | 0.985353 | ~868 | ~1.152 ms | 2.7 MB |
 | 7 | emotion.bin | Emotion (8 classes) | 0.999995 | ~684 | ~1.46 ms | 8.7 MB |
+| 8 | csrnet.bin | Crowd Density Map | 0.995526 | ~224 | ~4.4 ms | 514 KB |
 
-**Total pipeline size: ~45 MB**
+**Total pipeline size: ~45.8 MB**
 
 ---
 
-## Complete Retail Analytics Pipeline
+## Complete Retail Analytics Pipeline (Final)
 
 ```
 Camera NV12 Frame (640×640)
            │
-           ▼
-    ┌─────────────┐
-    │  YOLOv8s    │──────────────────► Person BBox
-    └─────────────┘                         │
-           │                     ┌──────────┴──────────┐
-           │                     ▼                     ▼
-           │              OSNet Re-ID           YOLOv8s-pose
-           │              512-dim feature       17 keypoints
-           │              → Track ID            → Body orientation
-           │
-    ┌─────────────┐
-    │YOLOv8n-face │──────────► Face BBox
-    └─────────────┘                │
-                        ┌──────────┼──────────┬──────────┐
-                        ▼          ▼          ▼          ▼
-                    headpose   genderage   emotion    (future)
-                    yaw/pitch  age/gender  8 classes  gaze
-                    roll
-                        │          │          │
-                        └──────────┴──────────┘
-                                   │
-                                   ▼
-                        📊 Analytics Output
-                   ┌──────────────────────────────┐
-                   │ person_id:      7             │
-                   │ dwell_time:     4.2s          │
-                   │ looking:        True          │
-                   │ yaw: -12° pitch: 5°           │
-                   │ age: 28  gender: Male         │
-                   │ emotion:  happiness (87%)     │
-                   │ pose:     facing_forward      │
-                   └──────────────────────────────┘
+     ┌─────┴──────┐
+     ▼            ▼
+ YOLOv8s      CSRNet (320×320)
+ Person BBox  Density Map
+ Track ID     → People Count
+     │         → Zone Heatmap
+     │
+     ├──────────────────────────────┐
+     ▼                              ▼
+OSNet Re-ID                  YOLOv8s-pose
+512-dim feature              17 keypoints
+→ Track ID                   → Body orientation
+→ Dwell time
+     │
+YOLOv8n-face → Face BBox
+     │
+     ├──────────┬──────────┬──────────┐
+     ▼          ▼          ▼          ▼
+ headpose   genderage   emotion   (future)
+ yaw/pitch  age/gender  8 classes  gaze
+ roll
+     │
+     └─────────────────────────────────┐
+                                       ▼
+                            📊 Analytics Dashboard
+                    ┌──────────────────────────────────┐
+                    │ traffic_count:    47 people       │
+                    │ current_in_zone:  3 people        │
+                    │ density_heatmap:  [zone data]     │
+                    │                                   │
+                    │ person_id:        7               │
+                    │ dwell_time:       4.2s            │
+                    │ looking_at_shelf: True            │
+                    │ yaw: -12° pitch: 5°               │
+                    │ age: 28  gender: Male             │
+                    │ emotion: happiness (87%)          │
+                    │ pose: facing_forward              │
+                    └──────────────────────────────────┘
 ```
 
 ---
-
 
 > All models run on BPU (Bayes-E). CPU nodes are minimal and run on ARM Cortex-A55.
 
