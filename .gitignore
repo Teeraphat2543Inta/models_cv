@@ -1,15 +1,10 @@
-# Models (ไฟล์ใหญ่ ไม่ต้อง commit)
-models/onnx/*.onnx
-models/bin/*.bin
+# Intermediate model files
+models/configs/model_output/
+models/onnx/
+data/
+hb_mapper_makertbin.log
+--model
 *.pt
-
-# Data
-data/datasets/
-data/test_images/
-
-# Output
-output/logs/
-output/results/
 
 # Python
 __pycache__/
