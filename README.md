@@ -421,56 +421,149 @@ if dwell_time > 2.0:  # seconds
 
 ---
 
-## Updated Performance Summary
+---
 
-| Model | Task | Cosine Sim | FPS | Latency | Size |
-|-------|------|-----------|-----|---------|------|
-| yolov8s.bin | Person Detection | 0.999772 | ~88 | ~11.3 ms | 13 MB |
-| yolov8n-face.bin | Face Detection | 0.999706 | ~100+ | <10 ms | 4.9 MB |
-| yolov8s-pose.bin | Pose Estimation | 0.999903 | ~21 | ~47.3 ms | 15 MB |
-| genderage.bin | Age + Gender | 0.995687 | ~10,116 | ~0.1 ms | 579 KB |
-| headpose.bin | Head Pose | 1.000000 | ~6,878 | ~0.145 ms | 454 KB |
-| osnet_reid.bin | Person Re-ID | 0.985353 | ~868 | ~1.152 ms | 2.7 MB |
+### 7. FERPlus Emotion Recognition — 8 Emotion Classes
 
-**Total pipeline size: ~32 MB**
+| Parameter | Value |
+|-----------|-------|
+| **File** | `models/bin/emotion.bin` |
+| **Source** | [Microsoft FERPlus](https://github.com/microsoft/FERPlus) via PINTO Model Zoo 259_Emotion_FERPlus |
+| **Task** | Facial Emotion Recognition — 8 classes |
+| **Architecture** | CNN-based deep network (VGG-style) |
+| **Training Dataset** | FER2013 + FERPlus soft labels (35,887 images) |
+| **Input Name** | `Input3` |
+| **Input Shape** | `1 × 1 × 64 × 64` |
+| **Input Type** | Grayscale (single channel) |
+| **Input Type (Runtime)** | gray — cropped face region converted to grayscale |
+| **Input Layout** | NCHW |
+| **Output Name** | `tf.identity` |
+| **Output Shape** | `1 × 8` |
+| **Output Format** | 8 emotion probability scores (softmax) |
+| **Normalization** | `pixel / 255.0` (data_scale = 0.003921568627) |
+| **ONNX Opset** | 11 |
+| **BPU March** | bayes-e |
+| **Optimize Level** | O3 |
+| **Compile Mode** | latency |
+| **Subgraphs** | 1 (fully on BPU except final Reshape) |
+| **Cosine Similarity** | **0.999995** 🔥 |
+| **BPU FPS** | ~684 FPS |
+| **BPU Latency** | ~1.46 ms |
+| **File Size (.bin)** | 8.7 MB |
+| **Calibration Dataset** | 54 grayscale images at 64×64 |
+| **Calibration Method** | max-percentile (percentile = 0.99995) |
+| **DataType** | int8 (BPU), float32 (CPU: final Reshape only) |
+
+**8 Emotion Classes (output index):**
+```
+0: neutral
+1: happiness
+2: surprise
+3: sadness
+4: anger
+5: disgust
+6: fear
+7: contempt
+```
+
+**CPU Nodes (run on ARM CPU):**
+- `MatMul_Gemm__28_transpose_output_reshape` — final reshape only
+
+**Usage — crop face before inference:**
+```python
+# 1. Get face bbox from YOLOv8n-face
+x1, y1, x2, y2 = face_bbox
+
+# 2. Crop, resize, convert to grayscale
+face_crop = image[y1:y2, x1:x2]
+face_crop = cv2.resize(face_crop, (64, 64))
+face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)  # grayscale
+
+# 3. Run inference
+output = model.infer(face_crop)  # shape: [1, 8]
+
+# 4. Get emotion
+emotions = ['neutral','happiness','surprise','sadness',
+            'anger','disgust','fear','contempt']
+emotion_id = output[0].argmax()
+emotion = emotions[emotion_id]
+confidence = output[0][emotion_id]
+
+# 5. Map to attention signal
+interested = emotion in ['happiness', 'surprise', 'neutral']
+```
+
+**Retail Analytics Mapping:**
+```
+happiness  → very interested 😊
+surprise   → attracted attention 😮
+neutral    → browsing normally 😐
+sadness    → not interested 😞
+disgust    → negative reaction 😤
+anger      → frustrated 😠
+contempt   → dismissive 😒
+fear       → uncomfortable 😨
+```
 
 ---
 
-## Complete Pipeline Flow
+## Final Complete Model Summary
+
+| # | Model | Task | Cosine Sim | FPS | Latency | Size |
+|---|-------|------|-----------|-----|---------|------|
+| 1 | yolov8s.bin | Person Detection | 0.999772 | ~88 | ~11.3 ms | 13 MB |
+| 2 | yolov8n-face.bin | Face Detection | 0.999706 | ~100+ | <10 ms | 4.9 MB |
+| 3 | yolov8s-pose.bin | Pose Estimation | 0.999903 | ~21 | ~47.3 ms | 15 MB |
+| 4 | genderage.bin | Age + Gender | 0.995687 | ~10,116 | ~0.1 ms | 579 KB |
+| 5 | headpose.bin | Head Pose (yaw/pitch/roll) | 1.000000 | ~6,878 | ~0.145 ms | 454 KB |
+| 6 | osnet_reid.bin | Person Re-ID (512-dim) | 0.985353 | ~868 | ~1.152 ms | 2.7 MB |
+| 7 | emotion.bin | Emotion (8 classes) | 0.999995 | ~684 | ~1.46 ms | 8.7 MB |
+
+**Total pipeline size: ~45 MB**
+
+---
+
+## Complete Retail Analytics Pipeline
 
 ```
-Camera NV12 Frame
-      │
-      ▼
-YOLOv8s ──────────────────────► Person BBox
-      │                               │
-      │                    ┌──────────┤
-      │                    ▼          ▼
-      │              OSNet Re-ID   YOLOv8s-pose
-      │              (512-dim)     (17 keypoints)
-      │              Track ID      Body orientation
-      │                    │
-YOLOv8n-face ──► Face BBox │
-      │               │    │
-      │    ┌──────────┤    │
-      │    ▼          ▼    │
-      │ headpose   genderage│
-      │ yaw/pitch  age/gender│
-      │ roll                │
-      │                     │
-      └─────────────────────┘
-                  │
-                  ▼
-         📊 Analytics Output
-         ┌─────────────────────────────┐
-         │ person_id: 7                │
-         │ dwell_time: 4.2s            │
-         │ looking_at_shelf: True      │
-         │ yaw: -12.3° pitch: 5.1°    │
-         │ age: 28  gender: Male       │
-         │ pose: facing_forward        │
-         └─────────────────────────────┘
+Camera NV12 Frame (640×640)
+           │
+           ▼
+    ┌─────────────┐
+    │  YOLOv8s    │──────────────────► Person BBox
+    └─────────────┘                         │
+           │                     ┌──────────┴──────────┐
+           │                     ▼                     ▼
+           │              OSNet Re-ID           YOLOv8s-pose
+           │              512-dim feature       17 keypoints
+           │              → Track ID            → Body orientation
+           │
+    ┌─────────────┐
+    │YOLOv8n-face │──────────► Face BBox
+    └─────────────┘                │
+                        ┌──────────┼──────────┬──────────┐
+                        ▼          ▼          ▼          ▼
+                    headpose   genderage   emotion    (future)
+                    yaw/pitch  age/gender  8 classes  gaze
+                    roll
+                        │          │          │
+                        └──────────┴──────────┘
+                                   │
+                                   ▼
+                        📊 Analytics Output
+                   ┌──────────────────────────────┐
+                   │ person_id:      7             │
+                   │ dwell_time:     4.2s          │
+                   │ looking:        True          │
+                   │ yaw: -12° pitch: 5°           │
+                   │ age: 28  gender: Male         │
+                   │ emotion:  happiness (87%)     │
+                   │ pose:     facing_forward      │
+                   └──────────────────────────────┘
 ```
+
+---
+
 
 > All models run on BPU (Bayes-E). CPU nodes are minimal and run on ARM Cortex-A55.
 
