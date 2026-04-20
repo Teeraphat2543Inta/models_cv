@@ -342,7 +342,86 @@ roll  = output['roll']   # degrees
 looking_at_shelf = abs(yaw) < 30 and abs(pitch) < 30
 ```
 
-**Performance Summary:**
+---
+
+### 6. OSNet Re-ID — Person Re-Identification
+
+| Parameter | Value |
+|-----------|-------|
+| **File** | `models/bin/osnet_reid.bin` |
+| **Source** | [KaiyangZhou/deep-person-reid](https://github.com/KaiyangZhou/deep-person-reid) via PINTO Model Zoo 429_OSNet |
+| **Task** | Person Re-Identification — extract 512-dim feature vector per person |
+| **Architecture** | OSNet x1.0 (Omni-Scale Network) |
+| **Training Dataset** | MSMT17 — large-scale person Re-ID dataset (126,441 images, 4,101 identities) |
+| **Input Name** | `base_image` |
+| **Input Shape** | `1 × 3 × 256 × 128` |
+| **Input Type (Runtime)** | NV12 — cropped person region |
+| **Input Type (Training)** | RGB, NCHW |
+| **Output Name** | `feature` |
+| **Output Shape** | `1 × 512` |
+| **Output Format** | 512-dimensional L2-normalized feature vector |
+| **Normalization** | `pixel / 255.0` (data_scale = 0.003921568627) |
+| **ONNX Opset** | 11 |
+| **Producer** | PyTorch v1.10 |
+| **BPU March** | bayes-e |
+| **Optimize Level** | O3 |
+| **Compile Mode** | latency |
+| **Subgraphs** | 1 (fully on BPU except final Reshape) |
+| **Cosine Similarity** | **0.985353** 🟢 |
+| **BPU FPS** | ~868 FPS |
+| **BPU Latency** | ~1.152 ms |
+| **File Size (.bin)** | 2.7 MB |
+| **Calibration Dataset** | 54 images at 256×128 (COCO val2017 + random) |
+| **Calibration Method** | max (auto-selected) |
+| **DataType** | int8 (BPU), float32 (CPU: final Reshape only) |
+
+**CPU Nodes (run on ARM CPU):**
+- `Relu_394feature_reshape_Reshape_0` — reshape `[1,512,1,1]` → `[1,512]`
+
+**How Re-ID works in pipeline:**
+```python
+# 1. Get person bbox from YOLOv8s
+x1, y1, x2, y2 = person_bbox
+
+# 2. Crop and resize person
+person_crop = image[y1:y2, x1:x2]
+person_crop = cv2.resize(person_crop, (128, 256))  # W=128, H=256
+person_crop = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
+
+# 3. Extract feature vector
+feature = model.infer(person_crop)  # shape: [1, 512]
+
+# 4. Compare with gallery (cosine similarity)
+similarity = cosine_similarity(feature, gallery_feature)
+if similarity > 0.7:
+    person_id = matched_id   # same person
+else:
+    person_id = new_id       # new person → assign new ID
+```
+
+**Dwell Time Measurement (using Re-ID):**
+```python
+# Track person across frames
+person_tracker = {}  # {person_id: {"first_seen": timestamp, "last_seen": timestamp}}
+
+# On each frame
+if person_id in person_tracker:
+    person_tracker[person_id]["last_seen"] = current_time
+else:
+    person_tracker[person_id] = {
+        "first_seen": current_time,
+        "last_seen": current_time
+    }
+
+# Calculate dwell time
+dwell_time = person_tracker[person_id]["last_seen"] - person_tracker[person_id]["first_seen"]
+if dwell_time > 2.0:  # seconds
+    print(f"Person {person_id} is interested (dwell: {dwell_time:.1f}s)")
+```
+
+---
+
+## Updated Performance Summary
 
 | Model | Task | Cosine Sim | FPS | Latency | Size |
 |-------|------|-----------|-----|---------|------|
@@ -350,7 +429,48 @@ looking_at_shelf = abs(yaw) < 30 and abs(pitch) < 30
 | yolov8n-face.bin | Face Detection | 0.999706 | ~100+ | <10 ms | 4.9 MB |
 | yolov8s-pose.bin | Pose Estimation | 0.999903 | ~21 | ~47.3 ms | 15 MB |
 | genderage.bin | Age + Gender | 0.995687 | ~10,116 | ~0.1 ms | 579 KB |
-| headpose.bin | Head Pose | **1.000000** | ~6,878 | ~0.145 ms | 454 KB |
+| headpose.bin | Head Pose | 1.000000 | ~6,878 | ~0.145 ms | 454 KB |
+| osnet_reid.bin | Person Re-ID | 0.985353 | ~868 | ~1.152 ms | 2.7 MB |
+
+**Total pipeline size: ~32 MB**
+
+---
+
+## Complete Pipeline Flow
+
+```
+Camera NV12 Frame
+      │
+      ▼
+YOLOv8s ──────────────────────► Person BBox
+      │                               │
+      │                    ┌──────────┤
+      │                    ▼          ▼
+      │              OSNet Re-ID   YOLOv8s-pose
+      │              (512-dim)     (17 keypoints)
+      │              Track ID      Body orientation
+      │                    │
+YOLOv8n-face ──► Face BBox │
+      │               │    │
+      │    ┌──────────┤    │
+      │    ▼          ▼    │
+      │ headpose   genderage│
+      │ yaw/pitch  age/gender│
+      │ roll                │
+      │                     │
+      └─────────────────────┘
+                  │
+                  ▼
+         📊 Analytics Output
+         ┌─────────────────────────────┐
+         │ person_id: 7                │
+         │ dwell_time: 4.2s            │
+         │ looking_at_shelf: True      │
+         │ yaw: -12.3° pitch: 5.1°    │
+         │ age: 28  gender: Male       │
+         │ pose: facing_forward        │
+         └─────────────────────────────┘
+```
 
 > All models run on BPU (Bayes-E). CPU nodes are minimal and run on ARM Cortex-A55.
 
@@ -388,45 +508,6 @@ hrt_model_exec perf \
 ### 5. Disable CPU frequency scaling for best performance
 ```bash
 echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor
-```
-
----
-
-## Project Structure
-
-```
-rdkx5_vision/
-├── models/
-│   ├── onnx/
-│   │   ├── yolov8s.onnx              (43 MB)
-│   │   ├── yolov8n-face.onnx         (12 MB)
-│   │   ├── yolov8s-pose.onnx         (45 MB)
-│   │   └── insightface/
-│   │       ├── genderage.onnx        (1.3 MB) — original opset 12
-│   │       ├── genderage_op11.onnx   (1.3 MB) — converted opset 11
-│   │       ├── det_10g.onnx          (17 MB)  — InsightFace detector
-│   │       └── 2d106det.onnx         (4.8 MB) — 106 landmarks
-│   ├── bin/                          ← Ready to deploy on RDK X5
-│   │   ├── yolov8s.bin               (13 MB)
-│   │   ├── yolov8n-face.bin          (4.9 MB)
-│   │   ├── yolov8s-pose.bin          (15 MB)
-│   │   └── genderage.bin             (579 KB)
-│   └── configs/
-│       ├── yolov8s.yaml
-│       ├── yolov8n-face.yaml
-│       ├── yolov8s-pose.yaml
-│       └── genderage.yaml
-├── scripts/
-│   ├── export_yolo.py                ← Step 1: Export PyTorch → ONNX
-│   ├── convert_model.sh              ← Step 2: Convert ONNX → .bin
-│   └── test_inference.sh             ← Step 3: Test on board
-├── src/pipeline/                     ← C++ pipeline (coming soon)
-├── data/
-│   ├── calibration/                  ← Raw images (.jpg)
-│   ├── calibration_processed/        ← 640×640 uint8 binary
-│   └── calibration_processed_96/     ← 96×96 uint8 binary (for genderage)
-└── docs/
-    └── 01_setup.md
 ```
 
 ---
