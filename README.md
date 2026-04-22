@@ -541,75 +541,138 @@ print(f"Busiest zone: {busiest} ({zones[busiest]:.1f} people)")
 
 ---
 
-## Final Complete Model Summary (8 Models)
+---
+
+### 9. Gender MobileNetV3 — Male / Female / Unknown
+
+| Parameter | Value |
+|-----------|-------|
+| **Files** | `models/bin/gender_mobilenetv3.bin` / `gender_mobilenetv3.hbm` |
+| **Task** | Gender Classification — 3 classes |
+| **Architecture** | MobileNetV3 Large + Custom Classifier Head |
+| **Training Dataset** | UTKFace (23,708 images) |
+| **Input Name** | `input` |
+| **Input Shape** | `1 × 3 × 224 × 224` |
+| **Input Type (Runtime)** | featuremap — pre-normalized float32 from DDR |
+| **Input Layout** | NCHW |
+| **Normalization** | ImageNet mean=[123.675, 116.28, 103.53] std=[58.395, 57.12, 57.375] |
+| **Output Name** | `output` |
+| **Output Shape** | `1 × 3` |
+| **Output Format** | `[Male_score, Female_score, Unknown_score]` (raw logits) |
+| **ONNX Opset** | 11 |
+| **BPU March** | bayes-e |
+| **Optimize Level** | O3 |
+| **Compile Mode** | latency |
+| **Input Source** | DDR (featuremap — not pyramid) |
+| **Cosine Similarity** | **0.997586** 🟢 |
+| **BPU FPS** | ~1,012 FPS |
+| **BPU Latency** | ~1.0 ms |
+| **File Size (.bin/.hbm)** | 5.5 MB |
+| **Calibration Dataset** | 54 UTKFace images (float32, ImageNet normalized) |
+| **Calibration Method** | max-percentile (percentile = 0.99995) |
+| **DataType** | int8 (BPU), float32 (CPU: final Reshape only) |
+
+**3 Output Classes:**
+```
+0: Male
+1: Female
+2: Unknown  ← age < 5 years, blurry, side/back view, low confidence
+```
+
+**Model Architecture:**
+```
+MobileNetV3 Large (backbone, pretrained ImageNet)
+    │
+    ▼
+BatchNorm1d(1280)
+Linear(1280 → 512) + ReLU + Dropout(0.4)
+Linear(512 → 128)  + ReLU + Dropout(0.3)
+Linear(128 → 3)
+```
+
+**Training Details:**
+```
+Dataset:       UTKFace 23,708 images
+Train/Val:     18,967 / 4,741
+Epochs:        50 (best at epoch 48)
+Optimizer:     AdamW (backbone lr=1e-5, head lr=1e-4)
+Scheduler:     CosineAnnealingWarmRestarts
+Loss:          CrossEntropyLoss + label_smoothing=0.1
+               weight=[1.0, 1.0, 3.0]  ← boost Unknown class
+Augmentation:  RandomCrop, HFlip, ColorJitter, RandomPerspective, RandomErasing
+Mixup:         alpha=0.3
+Mixed Precision: AMP (autocast)
+```
+
+**Validation Accuracy (best epoch 48):**
+```
+Overall:  93.21%
+Male:     94.54%
+Female:   90.93%
+Unknown:  94.74%
+```
+
+**Usage — crop face before inference:**
+```python
+import cv2
+import numpy as np
+
+# 1. Get face bbox from YOLOv8n-face
+x1, y1, x2, y2 = face_bbox
+
+# 2. Crop and preprocess
+face_crop = image[y1:y2, x1:x2]
+face_crop = cv2.resize(face_crop, (224, 224))
+face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB).astype(np.float32)
+
+# 3. ImageNet normalization (MUST apply before inference)
+mean = np.array([123.675, 116.28,  103.53], dtype=np.float32)
+std  = np.array([58.395,  57.12,   57.375], dtype=np.float32)
+face_crop = (face_crop - mean) / std
+
+# 4. Transpose to NCHW
+face_crop = face_crop.transpose(2, 0, 1)[np.newaxis]  # [1, 3, 224, 224]
+
+# 5. Run inference (input_source = DDR, featuremap)
+output = model.infer(face_crop)  # shape: [1, 3]
+
+# 6. Decode result
+classes = ['Male', 'Female', 'Unknown']
+scores = softmax(output[0])
+gender = classes[scores.argmax()]
+confidence = scores.max()
+
+# 7. Threshold for Unknown
+if confidence < 0.6:
+    gender = 'Unknown'
+
+print(f"Gender: {gender} ({confidence:.1%})")
+```
+
+**⚠️ Important Notes:**
+- Input source is **DDR (featuremap)** not pyramid — must normalize manually before inference
+- Apply ImageNet normalization before sending to model
+- This model is fine-tuned specifically for gender classification, not general face recognition
+
+---
+
+## Updated Final Model Summary (9 Models)
 
 | # | Model | Task | Cosine Sim | FPS | Latency | Size |
 |---|-------|------|-----------|-----|---------|------|
 | 1 | yolov8s.bin | Person Detection | 0.999772 | ~88 | ~11.3 ms | 13 MB |
 | 2 | yolov8n-face.bin | Face Detection | 0.999706 | ~100+ | <10 ms | 4.9 MB |
 | 3 | yolov8s-pose.bin | Pose Estimation | 0.999903 | ~21 | ~47.3 ms | 15 MB |
-| 4 | genderage.bin | Age + Gender | 0.995687 | ~10,116 | ~0.1 ms | 579 KB |
-| 5 | headpose.bin | Head Pose (yaw/pitch/roll) | 1.000000 | ~6,878 | ~0.145 ms | 454 KB |
-| 6 | osnet_reid.bin | Person Re-ID (512-dim) | 0.985353 | ~868 | ~1.152 ms | 2.7 MB |
-| 7 | emotion.bin | Emotion (8 classes) | 0.999995 | ~684 | ~1.46 ms | 8.7 MB |
+| 4 | genderage.bin | Age + Gender (InsightFace) | 0.995687 | ~10,116 | ~0.1 ms | 579 KB |
+| 5 | headpose.bin | Head Pose yaw/pitch/roll | 1.000000 | ~6,878 | ~0.145 ms | 454 KB |
+| 6 | osnet_reid.bin | Person Re-ID 512-dim | 0.985353 | ~868 | ~1.152 ms | 2.7 MB |
+| 7 | emotion.bin | Emotion 8 classes | 0.999995 | ~684 | ~1.46 ms | 8.7 MB |
 | 8 | csrnet.bin | Crowd Density Map | 0.995526 | ~224 | ~4.4 ms | 514 KB |
+| 9 | gender_mobilenetv3.bin/.hbm | Gender 3-class (fine-tuned) | 0.997586 | ~1,012 | ~1.0 ms | 5.5 MB |
 
-**Total pipeline size: ~45.8 MB**
-
----
-
-## Complete Retail Analytics Pipeline (Final)
-
-```
-Camera NV12 Frame (640×640)
-           │
-     ┌─────┴──────┐
-     ▼            ▼
- YOLOv8s      CSRNet (320×320)
- Person BBox  Density Map
- Track ID     → People Count
-     │         → Zone Heatmap
-     │
-     ├──────────────────────────────┐
-     ▼                              ▼
-OSNet Re-ID                  YOLOv8s-pose
-512-dim feature              17 keypoints
-→ Track ID                   → Body orientation
-→ Dwell time
-     │
-YOLOv8n-face → Face BBox
-     │
-     ├──────────┬──────────┬──────────┐
-     ▼          ▼          ▼          ▼
- headpose   genderage   emotion   (future)
- yaw/pitch  age/gender  8 classes  gaze
- roll
-     │
-     └─────────────────────────────────┐
-                                       ▼
-                            📊 Analytics Dashboard
-                    ┌──────────────────────────────────┐
-                    │ traffic_count:    47 people       │
-                    │ current_in_zone:  3 people        │
-                    │ density_heatmap:  [zone data]     │
-                    │                                   │
-                    │ person_id:        7               │
-                    │ dwell_time:       4.2s            │
-                    │ looking_at_shelf: True            │
-                    │ yaw: -12° pitch: 5°               │
-                    │ age: 28  gender: Male             │
-                    │ emotion: happiness (87%)          │
-                    │ pose: facing_forward              │
-                    └──────────────────────────────────┘
-```
+**Total pipeline size: ~51.3 MB**
 
 ---
-
-> All models run on BPU (Bayes-E). CPU nodes are minimal and run on ARM Cortex-A55.
-
----
-
-## How to Use on Board
 
 ### 1. Copy models to board
 ```bash
