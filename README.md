@@ -729,3 +729,50 @@ echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor
 Models are based on open-source weights:
 - YOLOv8: [Ultralytics AGPL-3.0](https://github.com/ultralytics/ultralytics/blob/main/LICENSE)
 - InsightFace: [MIT License](https://github.com/deepinsight/insightface/blob/master/LICENSE)
+
+---
+
+## Repository Structure
+
+```
+models_cv/
+├── models/
+│   ├── bin/        ← .bin models (for deployment on RDK X5)
+│   ├── hbm/        ← .hbm models (same content as .bin, renamed for compatibility)
+│   ├── onnx/       ← ONNX source models (before conversion)
+│   └── configs/    ← YAML conversion configs for hb_mapper
+├── data/
+│   ├── calibration/                   ← raw JPG calibration images (54 files)
+│   ├── calibration_processed/         ← 640×640 uint8 RGB binary
+│   ├── calibration_processed_96/      ← 96×96 for genderage
+│   ├── calibration_processed_112/     ← 112×112 for emotion
+│   ├── calibration_processed_224/     ← 224×224 for headpose
+│   ├── calibration_processed_320/     ← 320×320 for csrnet
+│   ├── calibration_processed_256x128/ ← 256×128 for osnet_reid
+│   └── calibration_gender_float/      ← 224×224 float32 normalized (UTKFace) for gender_mobilenetv3
+├── scripts/
+│   ├── export_yolo.py
+│   ├── convert_model.sh
+│   └── test_inference.sh
+└── docs/
+    └── 01_setup.md
+```
+
+## models/hbm/ — HBM Format Models
+
+All 9 models are available in both `.bin` and `.hbm` format under `models/hbm/`.
+The `.hbm` files are identical to `.bin` files — same content, renamed for team workflow compatibility.
+
+| File | Size |
+|------|------|
+| yolov8s.hbm | 13 MB |
+| yolov8n-face.hbm | 4.9 MB |
+| yolov8s-pose.hbm | 15 MB |
+| genderage.hbm | 579 KB |
+| headpose.hbm | 454 KB |
+| osnet_reid.hbm | 2.7 MB |
+| emotion.hbm | 8.7 MB |
+| csrnet.hbm | 514 KB |
+| gender_mobilenetv3.hbm | 5.5 MB |
+
+**Total: ~51.3 MB**
