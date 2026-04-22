@@ -11,17 +11,23 @@ Retail shelf analytics — detecting people walking past, measuring attention (h
 
 ## 📋 Table of Contents
 - [Hardware](#hardware)
-- [Pipeline Overview](#pipeline-overview)
+- [Repository Structure](#repository-structure)
 - [Models](#models)
-  - [YOLOv8s — Person Detection](#1-yolov8s--person-detection)
-  - [YOLOv8n-face — Face Detection](#2-yolov8n-face--face-detection)
-  - [YOLOv8s-pose — Pose Estimation](#3-yolov8s-pose--pose-estimation)
-  - [InsightFace GenderAge — Age & Gender](#4-insightface-genderage--age--gender)
+  - [1. YOLOv8s — Person Detection](#1-yolov8s--person-detection)
+  - [2. YOLOv8n-face — Face Detection](#2-yolov8n-face--face-detection)
+  - [3. YOLOv8s-pose — Pose Estimation](#3-yolov8s-pose--pose-estimation)
+  - [4. InsightFace GenderAge — Age & Gender](#4-insightface-genderage--age--gender)
+  - [5. Headpose — Head Pose Estimation](#5-headpose--head-pose-estimation)
+  - [6. OSNet Re-ID — Person Re-Identification](#6-osnet-re-id--person-re-identification)
+  - [7. FERPlus Emotion Recognition](#7-ferplus-emotion-recognition)
+  - [8. CSRNet — Crowd Density Estimation](#8-csrnet--crowd-density-estimation)
+  - [9. Gender MobileNetV3](#9-gender-mobilenetv3--male--female--unknown)
+  - [10. Gender MobileNetV2 ⭐](#10-gender-mobilenetv2--male--female--unknown-recommended)
 - [Calibration Details](#calibration-details)
-- [Performance Summary](#performance-summary)
+- [Final Model Summary](#final-model-summary)
 - [How to Use on Board](#how-to-use-on-board)
-- [Project Structure](#project-structure)
 - [Toolchain Info](#toolchain-info)
+- [License](#license)
 
 ---
 
@@ -35,7 +41,56 @@ Retail shelf analytics — detecting people walking past, measuring attention (h
 | Camera | Pi Camera Module 2 (MIPI CSI) |
 | Camera Output Format | NV12 |
 | OS | Ubuntu 22.04 aarch64 |
+| Board IP | 172.20.10.2 |
+| Board User | supersensor |
 | Runtime Version | hrt_model_exec v1.24.5 |
+
+---
+
+## Repository Structure
+
+```
+models_cv/
+├── models/
+│   ├── bin/                           ← compiled .bin models for RDK X5 deployment
+│   ├── hbm/                           ← .hbm models (identical to .bin, renamed for compatibility)
+│   ├── onnx/                          ← ONNX source models (pre-conversion)
+│   └── configs/                       ← YAML configs for hb_mapper
+├── data/
+│   ├── calibration/                   ← raw JPG calibration images (54 files)
+│   ├── calibration_processed/         ← 640×640 uint8 RGB binary
+│   ├── calibration_processed_96/      ← 96×96 for genderage
+│   ├── calibration_processed_224/     ← 224×224 for headpose
+│   ├── calibration_processed_320/     ← 320×320 for csrnet
+│   ├── calibration_processed_256x128/ ← 256×128 for osnet_reid
+│   ├── calibration_processed_64/      ← 64×64 grayscale for emotion
+│   └── calibration_gender_float/      ← 224×224 float32 ImageNet-normalized (UTKFace)
+├── scripts/
+│   ├── export_yolo.py
+│   ├── convert_model.sh
+│   └── test_inference.sh
+└── docs/
+    └── 01_setup.md
+```
+
+### models/hbm/ — HBM Format Models
+
+All 10 models are available in both `.bin` and `.hbm` format. The `.hbm` files are identical to `.bin` — same content, renamed for team workflow compatibility.
+
+| File | Size |
+|------|------|
+| yolov8s.hbm | 13 MB |
+| yolov8n-face.hbm | 4.9 MB |
+| yolov8s-pose.hbm | 15 MB |
+| genderage.hbm | 579 KB |
+| headpose.hbm | 454 KB |
+| osnet_reid.hbm | 2.7 MB |
+| emotion.hbm | 8.7 MB |
+| csrnet.hbm | 514 KB |
+| gender_mobilenetv3.hbm | 5.5 MB |
+| gender_mobilenetv2.hbm | 2.9 MB |
+
+**Total: ~54.2 MB**
 
 ---
 
@@ -105,18 +160,18 @@ input_size     = (640, 640)
 | **Compile Mode** | latency |
 | **Cosine Similarity** | **0.999706** 🟢 |
 | **BPU FPS** | ~100+ FPS |
+| **BPU Latency** | <10 ms |
 | **File Size (.bin)** | 4.9 MB |
 | **DataType** | int8 (BPU), float32 (CPU nodes) |
 
 **Post-processing parameters:**
 ```python
-conf_threshold = 0.4   # higher threshold for face
+conf_threshold = 0.4
 iou_threshold  = 0.5
 input_size     = (640, 640)
 ```
 
-**⚠️ Note:** Base weights are YOLOv8n (general detector), not face-specific.  
-For production, replace with dedicated face weights such as `yolov8-face` from akanametov/yolo-face.
+> ⚠️ Base weights are YOLOv8n (general detector). For production, replace with dedicated face weights such as `yolov8-face` from akanametov/yolo-face.
 
 ---
 
@@ -161,18 +216,14 @@ For production, replace with dedicated face weights such as `yolov8-face` from a
 
 **Engagement detection logic:**
 ```python
-# Person is "looking at shelf" if:
-# nose keypoint is visible AND facing forward
-nose_conf    = keypoints[0][2]
-l_shoulder_x = keypoints[5][0]
-r_shoulder_x = keypoints[6][0]
+nose_conf      = keypoints[0][2]
+l_shoulder_x   = keypoints[5][0]
+r_shoulder_x   = keypoints[6][0]
 shoulder_width = abs(r_shoulder_x - l_shoulder_x)
 # if shoulder_width > threshold → person facing camera
 ```
 
-**Known Issues:**
-- O3 causes compiler crash (`calculate size exceed peak dim`) → must use O1
-- O1 is ~4× slower than O3 would be; upgrade hbdk when fixed
+> ⚠️ Known issue: O3 causes compiler crash (`calculate size exceed peak dim`) — must use O1. O1 is ~4× slower; upgrade hbdk when fixed.
 
 ---
 
@@ -181,7 +232,7 @@ shoulder_width = abs(r_shoulder_x - l_shoulder_x)
 | Parameter | Value |
 |-----------|-------|
 | **File** | `models/bin/genderage.bin` |
-| **Source** | InsightFace `buffalo_l` pack — `genderage.onnx` |
+| **Source** | InsightFace `buffalo_l` pack |
 | **Task** | Age estimation + Gender classification |
 | **Architecture** | MobileNet-based lightweight classifier |
 | **Input Name** | `data` |
@@ -192,58 +243,33 @@ shoulder_width = abs(r_shoulder_x - l_shoulder_x)
 | **Output Format** | `[gender_prob, age_value, padding]` |
 | **Output Decoding** | `gender = 'Male' if output[0] > 0.5 else 'Female'`; `age = output[1] * 100` |
 | **Normalization** | `pixel / 255.0` |
-| **Original ONNX Opset** | 12 (downgraded to 11 for compatibility) |
+| **Original ONNX Opset** | 12 (downgraded to 11) |
 | **BPU March** | bayes-e |
 | **Optimize Level** | O3 |
 | **Compile Mode** | latency |
-| **Subgraphs** | 1 (almost fully on BPU) |
 | **Cosine Similarity** | **0.995687** 🟢 |
 | **BPU FPS** | **~10,116 FPS** 🚀 |
-| **BPU Latency** | **~98.8 microseconds** 🚀 |
+| **BPU Latency** | **~98.8 μs** 🚀 |
 | **File Size (.bin)** | 579 KB |
 | **DataType** | int8 (BPU), float32 (CPU: final Concat + Reshape) |
+| **Gender Accuracy** | ~97% |
+| **Age MAE** | ~3-4 years |
 
-**Usage — crop face before inference:**
+**Usage:**
 ```python
-# 1. Get face bbox from YOLOv8n-face
 x1, y1, x2, y2 = face_bbox
-
-# 2. Crop and resize
 face_crop = image[y1:y2, x1:x2]
 face_crop = cv2.resize(face_crop, (96, 96))
 face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
 
-# 3. Infer
 output = model.infer(face_crop)  # shape: [1, 3]
 gender = 'Male' if output[0][0] > 0.5 else 'Female'
 age    = int(output[0][1] * 100)
 ```
 
-**Accuracy benchmarks (InsightFace buffalo_l):**
-- Gender accuracy: ~97%
-- Age MAE: ~3-4 years
-
 ---
 
-## Calibration Details
-
-| Parameter | Value |
-|-----------|-------|
-| **Total Images** | 54 (34 COCO val2017 + 20 random/picsum) |
-| **640×640 format** | Used for yolov8s, yolov8n-face, yolov8s-pose |
-| **96×96 format** | Used for genderage |
-| **Pixel Format** | uint8, RGB channel order |
-| **File Format** | Raw binary `.bin` (H × W × C, uint8) |
-| **Method Selected** | max-percentile (percentile = 0.99995) |
-| **Per-Channel Quantization** | False |
-| **Asymmetric Quantization** | False |
-| **Batch Size** | 8 (auto-reset to 1 for pose/genderage) |
-
----
-
-#---
-
-### 5. Lightweight Head Pose Estimation — Yaw / Pitch / Roll
+### 5. Headpose — Head Pose Estimation
 
 | Parameter | Value |
 |-----------|-------|
@@ -258,53 +284,36 @@ age    = int(output[0][1] * 100)
 | **Output Names** | `roll`, `yaw`, `pitch` |
 | **Output Shape** | `[1]` each — scalar angle in degrees |
 | **Output Range** | yaw: ±90°, pitch: ±90°, roll: ±90° |
-| **Normalization** | `pixel / 255.0` (data_scale = 0.003921568627) |
+| **Normalization** | `pixel / 255.0` |
 | **ONNX Opset** | 11 |
-| **Producer** | PyTorch v1.11.0 |
 | **BPU March** | bayes-e |
 | **Optimize Level** | O3 |
 | **Compile Mode** | latency |
-| **Subgraphs** | 4 (main BPU + 3 post-process BPU) |
-| **Cosine Similarity (roll)** | **1.000000** 🔥 |
-| **Cosine Similarity (yaw)** | **1.000000** 🔥 |
-| **Cosine Similarity (pitch)** | **1.000000** 🔥 |
-| **BPU FPS (main subgraph)** | ~6,878 FPS |
-| **BPU Latency (main subgraph)** | ~145 microseconds |
+| **Subgraphs** | 4 |
+| **Cosine Similarity** | **1.000000** 🔥 |
+| **BPU FPS** | ~6,878 FPS |
+| **BPU Latency** | ~145 μs |
 | **File Size (.bin)** | 454 KB |
-| **Calibration Dataset** | 54 images at 224×224 (COCO val2017 + random) |
 | **Calibration Method** | kl (num_bin=1024, max_num_bin=16384) |
 | **DataType** | int8 (BPU), float32 (CPU: Softmax × 3) |
 
-**CPU Nodes (run on ARM CPU):**
-- `Softmax_140` — softmax for yaw bins
-- `Softmax_144` — softmax for pitch bins
-- `Softmax_148` — softmax for roll bins
-
-**Angle Interpretation:**
+**Angle interpretation:**
 ```
-yaw   > 0° → head turning right
-yaw   < 0° → head turning left
-pitch > 0° → head tilting up
-pitch < 0° → head tilting down
-roll  > 0° → head tilting right
-roll  < 0° → head tilting left
+yaw   > 0° → turning right    yaw   < 0° → turning left
+pitch > 0° → tilting up       pitch < 0° → tilting down
+roll  > 0° → tilting right    roll  < 0° → tilting left
 ```
 
-**Attention Detection Logic:**
+**Usage:**
 ```python
-# Crop face first using yolov8n-face output
 x1, y1, x2, y2 = face_bbox
 face_crop = image[y1:y2, x1:x2]
 face_crop = cv2.resize(face_crop, (224, 224))
 face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
 
-# Run inference
 output = model.infer(face_crop)
-yaw   = output['yaw']    # degrees
-pitch = output['pitch']  # degrees
-roll  = output['roll']   # degrees
+yaw, pitch, roll = output['yaw'], output['pitch'], output['roll']
 
-# Determine if person is looking at shelf
 looking_at_shelf = abs(yaw) < 30 and abs(pitch) < 30
 ```
 
@@ -316,80 +325,60 @@ looking_at_shelf = abs(yaw) < 30 and abs(pitch) < 30
 |-----------|-------|
 | **File** | `models/bin/osnet_reid.bin` |
 | **Source** | [KaiyangZhou/deep-person-reid](https://github.com/KaiyangZhou/deep-person-reid) via PINTO Model Zoo 429_OSNet |
-| **Task** | Person Re-Identification — extract 512-dim feature vector per person |
+| **Task** | Person Re-Identification — 512-dim feature vector |
 | **Architecture** | OSNet x1.0 (Omni-Scale Network) |
-| **Training Dataset** | MSMT17 — large-scale person Re-ID dataset (126,441 images, 4,101 identities) |
+| **Training Dataset** | MSMT17 (126,441 images, 4,101 identities) |
 | **Input Name** | `base_image` |
 | **Input Shape** | `1 × 3 × 256 × 128` |
 | **Input Type (Runtime)** | NV12 — cropped person region |
 | **Input Type (Training)** | RGB, NCHW |
 | **Output Name** | `feature` |
 | **Output Shape** | `1 × 512` |
-| **Output Format** | 512-dimensional L2-normalized feature vector |
-| **Normalization** | `pixel / 255.0` (data_scale = 0.003921568627) |
+| **Output Format** | 512-dim L2-normalized feature vector |
+| **Normalization** | `pixel / 255.0` |
 | **ONNX Opset** | 11 |
-| **Producer** | PyTorch v1.10 |
 | **BPU March** | bayes-e |
 | **Optimize Level** | O3 |
 | **Compile Mode** | latency |
-| **Subgraphs** | 1 (fully on BPU except final Reshape) |
 | **Cosine Similarity** | **0.985353** 🟢 |
 | **BPU FPS** | ~868 FPS |
 | **BPU Latency** | ~1.152 ms |
 | **File Size (.bin)** | 2.7 MB |
-| **Calibration Dataset** | 54 images at 256×128 (COCO val2017 + random) |
-| **Calibration Method** | max (auto-selected) |
 | **DataType** | int8 (BPU), float32 (CPU: final Reshape only) |
 
-**CPU Nodes (run on ARM CPU):**
-- `Relu_394feature_reshape_Reshape_0` — reshape `[1,512,1,1]` → `[1,512]`
-
-**How Re-ID works in pipeline:**
+**Usage:**
 ```python
-# 1. Get person bbox from YOLOv8s
 x1, y1, x2, y2 = person_bbox
-
-# 2. Crop and resize person
 person_crop = image[y1:y2, x1:x2]
 person_crop = cv2.resize(person_crop, (128, 256))  # W=128, H=256
 person_crop = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
 
-# 3. Extract feature vector
 feature = model.infer(person_crop)  # shape: [1, 512]
 
-# 4. Compare with gallery (cosine similarity)
 similarity = cosine_similarity(feature, gallery_feature)
 if similarity > 0.7:
-    person_id = matched_id   # same person
+    person_id = matched_id
 else:
-    person_id = new_id       # new person → assign new ID
+    person_id = new_id  # assign new ID
 ```
 
-**Dwell Time Measurement (using Re-ID):**
+**Dwell time tracking:**
 ```python
-# Track person across frames
-person_tracker = {}  # {person_id: {"first_seen": timestamp, "last_seen": timestamp}}
+person_tracker = {}
 
-# On each frame
 if person_id in person_tracker:
     person_tracker[person_id]["last_seen"] = current_time
 else:
-    person_tracker[person_id] = {
-        "first_seen": current_time,
-        "last_seen": current_time
-    }
+    person_tracker[person_id] = {"first_seen": current_time, "last_seen": current_time}
 
-# Calculate dwell time
 dwell_time = person_tracker[person_id]["last_seen"] - person_tracker[person_id]["first_seen"]
-if dwell_time > 2.0:  # seconds
+if dwell_time > 2.0:
     print(f"Person {person_id} is interested (dwell: {dwell_time:.1f}s)")
 ```
 
 ---
 
----
-
-### 7. FERPlus Emotion Recognition — 8 Emotion Classes
+### 7. FERPlus Emotion Recognition
 
 | Parameter | Value |
 |-----------|-------|
@@ -400,78 +389,47 @@ if dwell_time > 2.0:  # seconds
 | **Training Dataset** | FER2013 + FERPlus soft labels (35,887 images) |
 | **Input Name** | `Input3` |
 | **Input Shape** | `1 × 1 × 64 × 64` |
-| **Input Type** | Grayscale (single channel) |
 | **Input Type (Runtime)** | gray — cropped face region converted to grayscale |
 | **Input Layout** | NCHW |
 | **Output Name** | `tf.identity` |
 | **Output Shape** | `1 × 8` |
-| **Output Format** | 8 emotion probability scores (softmax) |
-| **Normalization** | `pixel / 255.0` (data_scale = 0.003921568627) |
+| **Output Format** | 8 emotion probability scores |
+| **Normalization** | `pixel / 255.0` |
 | **ONNX Opset** | 11 |
 | **BPU March** | bayes-e |
 | **Optimize Level** | O3 |
 | **Compile Mode** | latency |
-| **Subgraphs** | 1 (fully on BPU except final Reshape) |
 | **Cosine Similarity** | **0.999995** 🔥 |
 | **BPU FPS** | ~684 FPS |
 | **BPU Latency** | ~1.46 ms |
 | **File Size (.bin)** | 8.7 MB |
-| **Calibration Dataset** | 54 grayscale images at 64×64 |
-| **Calibration Method** | max-percentile (percentile = 0.99995) |
 | **DataType** | int8 (BPU), float32 (CPU: final Reshape only) |
 
-**8 Emotion Classes (output index):**
+**8 Emotion Classes:**
 ```
-0: neutral
-1: happiness
-2: surprise
-3: sadness
-4: anger
-5: disgust
-6: fear
-7: contempt
+0: neutral    1: happiness  2: surprise   3: sadness
+4: anger      5: disgust    6: fear       7: contempt
 ```
 
-**CPU Nodes (run on ARM CPU):**
-- `MatMul_Gemm__28_transpose_output_reshape` — final reshape only
-
-**Usage — crop face before inference:**
+**Usage:**
 ```python
-# 1. Get face bbox from YOLOv8n-face
 x1, y1, x2, y2 = face_bbox
-
-# 2. Crop, resize, convert to grayscale
 face_crop = image[y1:y2, x1:x2]
 face_crop = cv2.resize(face_crop, (64, 64))
-face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)  # grayscale
+face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
 
-# 3. Run inference
 output = model.infer(face_crop)  # shape: [1, 8]
-
-# 4. Get emotion
-emotions = ['neutral','happiness','surprise','sadness',
-            'anger','disgust','fear','contempt']
-emotion_id = output[0].argmax()
-emotion = emotions[emotion_id]
-confidence = output[0][emotion_id]
-
-# 5. Map to attention signal
-interested = emotion in ['happiness', 'surprise', 'neutral']
+emotions = ['neutral','happiness','surprise','sadness','anger','disgust','fear','contempt']
+emotion  = emotions[output[0].argmax()]
 ```
 
-**Retail Analytics Mapping:**
+**Retail mapping:**
 ```
-happiness  → very interested 😊
-surprise   → attracted attention 😮
-neutral    → browsing normally 😐
-sadness    → not interested 😞
-disgust    → negative reaction 😤
-anger      → frustrated 😠
-contempt   → dismissive 😒
-fear       → uncomfortable 😨
+happiness → very interested 😊    surprise → attracted attention 😮
+neutral   → browsing normally 😐  sadness  → not interested 😞
+disgust   → negative reaction 😤  anger    → frustrated 😠
+contempt  → dismissive 😒         fear     → uncomfortable 😨
 ```
-
----
 
 ---
 
@@ -481,7 +439,7 @@ fear       → uncomfortable 😨
 |-----------|-------|
 | **File** | `models/bin/csrnet.bin` |
 | **Source** | [leeyeehoo/CSRNet-pytorch](https://github.com/leeyeehoo/CSRNet-pytorch) via PINTO Model Zoo 400_CSRNet |
-| **Task** | Crowd Density Estimation — generate density map + people count |
+| **Task** | Crowd Density Estimation — density map + people count |
 | **Architecture** | CSRNet (Congested Scene Recognition Network) |
 | **Training Dataset** | ShanghaiTech Part A + Part B |
 | **Input Name** | `input` |
@@ -490,42 +448,28 @@ fear       → uncomfortable 😨
 | **Input Type (Training)** | RGB, NCHW |
 | **Output Name** | `output` |
 | **Output Shape** | `1 × 3 × 320 × 320` |
-| **Output Format** | Density map — sum of all pixel values = estimated people count |
-| **Normalization** | `pixel / 255.0` (data_scale = 0.003921568627) |
+| **Output Format** | Density map — sum of pixel values = people count |
+| **Normalization** | `pixel / 255.0` |
 | **ONNX Opset** | 11 |
-| **Producer** | PyTorch v2.1.0 |
 | **BPU March** | bayes-e |
 | **Optimize Level** | O3 |
 | **Compile Mode** | latency |
-| **Subgraphs** | 1 (fully on BPU) |
 | **Cosine Similarity** | **0.995526** 🟢 |
 | **BPU FPS** | ~224 FPS |
 | **BPU Latency** | ~4.4 ms |
 | **File Size (.bin)** | 514 KB |
-| **Calibration Dataset** | 54 images at 320×320 (COCO val2017 + random) |
-| **Calibration Method** | max-percentile (percentile = 0.99995) |
 | **DataType** | int8 (BPU, fully on BPU) |
 
-**Note:** Original model input is 640×640 but forced to 320×320 to fit memory constraints. For production use, consider using the native 640×640 model on a device with more RAM.
+> ⚠️ Original model input is 640×640 but forced to 320×320 to fit memory constraints.
 
-**How to get people count from density map:**
+**Usage:**
 ```python
-# Run inference
 density_map = model.infer(frame)  # shape: [1, 3, 320, 320]
-
-# Sum density map to get people count
-# Use only first channel (they are identical)
 count = density_map[0][0].sum()
 print(f"Estimated people count: {count:.1f}")
-```
 
-**Zone-based density analysis:**
-```python
-import numpy as np
-
-density = density_map[0][0]  # shape: [320, 320]
-
-# Divide into zones (e.g., 4 zones for shelf sections)
+# Zone-based analysis
+density = density_map[0][0]  # [320, 320]
 h, w = density.shape
 zones = {
     'top_left':     density[:h//2, :w//2].sum(),
@@ -533,13 +477,8 @@ zones = {
     'bottom_left':  density[h//2:, :w//2].sum(),
     'bottom_right': density[h//2:, w//2:].sum(),
 }
-
-# Find busiest zone
 busiest = max(zones, key=zones.get)
-print(f"Busiest zone: {busiest} ({zones[busiest]:.1f} people)")
 ```
-
----
 
 ---
 
@@ -547,7 +486,7 @@ print(f"Busiest zone: {busiest} ({zones[busiest]:.1f} people)")
 
 | Parameter | Value |
 |-----------|-------|
-| **Files** | `models/bin/gender_mobilenetv3.bin` / `gender_mobilenetv3.hbm` |
+| **Files** | `models/bin/gender_mobilenetv3.bin` / `models/hbm/gender_mobilenetv3.hbm` |
 | **Task** | Gender Classification — 3 classes |
 | **Architecture** | MobileNetV3 Large + Custom Classifier Head |
 | **Training Dataset** | UTKFace (23,708 images) |
@@ -568,124 +507,218 @@ print(f"Busiest zone: {busiest} ({zones[busiest]:.1f} people)")
 | **BPU FPS** | ~1,012 FPS |
 | **BPU Latency** | ~1.0 ms |
 | **File Size (.bin/.hbm)** | 5.5 MB |
-| **Calibration Dataset** | 54 UTKFace images (float32, ImageNet normalized) |
-| **Calibration Method** | max-percentile (percentile = 0.99995) |
 | **DataType** | int8 (BPU), float32 (CPU: final Reshape only) |
 
 **3 Output Classes:**
 ```
-0: Male
-1: Female
-2: Unknown  ← age < 5 years, blurry, side/back view, low confidence
+0: Male    1: Female    2: Unknown (age < 5, blurry, side/back view)
 ```
 
 **Model Architecture:**
 ```
-MobileNetV3 Large (backbone, pretrained ImageNet)
-    │
-    ▼
-BatchNorm1d(1280)
-Linear(1280 → 512) + ReLU + Dropout(0.4)
-Linear(512 → 128)  + ReLU + Dropout(0.3)
-Linear(128 → 3)
+MobileNetV3 Large (pretrained ImageNet)
+→ BatchNorm1d(1280) → Linear(1280→512) → ReLU → Dropout(0.4)
+→ Linear(512→128) → ReLU → Dropout(0.3) → Linear(128→3)
 ```
 
 **Training Details:**
 ```
-Dataset:       UTKFace 23,708 images
-Train/Val:     18,967 / 4,741
-Epochs:        50 (best at epoch 48)
-Optimizer:     AdamW (backbone lr=1e-5, head lr=1e-4)
-Scheduler:     CosineAnnealingWarmRestarts
-Loss:          CrossEntropyLoss + label_smoothing=0.1
-               weight=[1.0, 1.0, 3.0]  ← boost Unknown class
-Augmentation:  RandomCrop, HFlip, ColorJitter, RandomPerspective, RandomErasing
-Mixup:         alpha=0.3
-Mixed Precision: AMP (autocast)
+Dataset:        UTKFace 23,708 images  |  Train/Val: 18,967 / 4,741
+Epochs:         50 (best at epoch 48)  |  Optimizer: AdamW
+Scheduler:      CosineAnnealingWarmRestarts
+Loss:           CrossEntropyLoss (label_smoothing=0.1, weight=[1,1,3])
+Augmentation:   RandomCrop, HFlip, ColorJitter, RandomPerspective, RandomErasing, Mixup(0.3)
+Mixed Precision: AMP
 ```
 
-**Validation Accuracy (best epoch 48):**
+**Validation Accuracy:**
 ```
-Overall:  93.21%
-Male:     94.54%
-Female:   90.93%
-Unknown:  94.74%
+Overall: 93.21%  |  Male: 94.54%  |  Female: 90.93%  |  Unknown: 94.74%
 ```
 
-**Usage — crop face before inference:**
+**Usage:**
 ```python
-import cv2
-import numpy as np
-
-# 1. Get face bbox from YOLOv8n-face
 x1, y1, x2, y2 = face_bbox
-
-# 2. Crop and preprocess
 face_crop = image[y1:y2, x1:x2]
 face_crop = cv2.resize(face_crop, (224, 224))
 face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB).astype(np.float32)
 
-# 3. ImageNet normalization (MUST apply before inference)
 mean = np.array([123.675, 116.28,  103.53], dtype=np.float32)
 std  = np.array([58.395,  57.12,   57.375], dtype=np.float32)
 face_crop = (face_crop - mean) / std
-
-# 4. Transpose to NCHW
 face_crop = face_crop.transpose(2, 0, 1)[np.newaxis]  # [1, 3, 224, 224]
 
-# 5. Run inference (input_source = DDR, featuremap)
 output = model.infer(face_crop)  # shape: [1, 3]
-
-# 6. Decode result
 classes = ['Male', 'Female', 'Unknown']
 scores = softmax(output[0])
-gender = classes[scores.argmax()]
-confidence = scores.max()
-
-# 7. Threshold for Unknown
-if confidence < 0.6:
-    gender = 'Unknown'
-
-print(f"Gender: {gender} ({confidence:.1%})")
+gender = classes[scores.argmax()] if scores.max() > 0.6 else 'Unknown'
 ```
 
-**⚠️ Important Notes:**
-- Input source is **DDR (featuremap)** not pyramid — must normalize manually before inference
-- Apply ImageNet normalization before sending to model
-- This model is fine-tuned specifically for gender classification, not general face recognition
+> ⚠️ Input source is DDR (featuremap) — must apply ImageNet normalization manually before inference.
 
 ---
 
-## Updated Final Model Summary (9 Models)
+### 10. Gender MobileNetV2 — Male / Female / Unknown (Recommended)
+
+| Parameter | Value |
+|-----------|-------|
+| **Files** | `models/bin/gender_mobilenetv2.bin` / `models/hbm/gender_mobilenetv2.hbm` |
+| **Task** | Gender Classification — 3 classes |
+| **Architecture** | MobileNetV2 + Custom Classifier Head |
+| **Training Dataset** | UTKFace (23,708 images) |
+| **Input Name** | `input` |
+| **Input Shape** | `1 × 3 × 224 × 224` |
+| **Input Type (Runtime)** | featuremap — pre-normalized float32 from DDR |
+| **Input Layout** | NCHW |
+| **Normalization** | ImageNet mean=[123.675, 116.28, 103.53] std=[58.395, 57.12, 57.375] |
+| **Output Name** | `output` |
+| **Output Shape** | `1 × 3` |
+| **Output Format** | `[Male_score, Female_score, Unknown_score]` (raw logits) |
+| **ONNX Opset** | 11 |
+| **BPU March** | bayes-e |
+| **Optimize Level** | O3 |
+| **Compile Mode** | latency |
+| **Input Source** | DDR (featuremap — not pyramid) |
+| **Cosine Similarity** | **0.999759** 🔥 |
+| **All layers Cosine Sim** | **> 0.983** (every single layer) 🔥 |
+| **BPU FPS** | ~1,590 FPS |
+| **BPU Latency** | ~628 μs |
+| **File Size (.bin/.hbm)** | ~2.9 MB |
+| **Calibration Dataset** | 154 UTKFace images (float32, ImageNet normalized) |
+| **Calibration Method** | max (auto-selected) |
+| **DataType** | int8 (BPU), float32 (CPU: final Reshape only) |
+
+**3 Output Classes:**
+```
+0: Male    1: Female    2: Unknown (age < 5, blurry, side/back view)
+```
+
+**Why MobileNetV2 over MobileNetV3:**
+```
+MobileNetV3: Hard-Swish activation → difficult to quantize → some layers < 0.5 Cosine Sim
+MobileNetV2: ReLU6 activation      → quantizes cleanly   → all layers > 0.983 Cosine Sim
+```
+
+**Model Architecture:**
+```
+MobileNetV2 (pretrained ImageNet)
+→ GlobalAveragePool → [1, 1280]
+→ Linear(1280→256) → ReLU → Dropout(0.3)
+→ Linear(256→3)
+```
+
+**Training Details:**
+```
+Dataset:        UTKFace 23,708 images  |  Train/Val: 18,967 / 4,741
+Epochs:         50 (best at epoch 40)  |  Optimizer: AdamW
+Scheduler:      CosineAnnealingWarmRestarts (T_0=10, T_mult=2)
+Loss:           CrossEntropyLoss (label_smoothing=0.1, weight=[1,1,3])
+Augmentation:   RandomCrop(224), HFlip, ColorJitter, RandomRotation(10), RandomErasing, Mixup(0.3)
+Mixed Precision: AMP
+```
+
+**Validation Accuracy:**
+```
+Overall: 92.30%  |  Male: 94.27%  |  Female: 89.66%  |  Unknown: 94.07%
+```
+
+**Comparison vs MobileNetV3:**
+
+| Metric | MobileNetV3 | MobileNetV2 | Winner |
+|--------|------------|------------|--------|
+| Output Cosine Sim | 0.997586 | **0.999759** | ✅ V2 |
+| Min layer Cosine Sim | -0.006 | **0.983** | ✅ V2 |
+| FPS | ~1,012 | **~1,590** | ✅ V2 |
+| Latency | ~1.0 ms | **~0.63 ms** | ✅ V2 |
+| File size | 5.5 MB | **2.9 MB** | ✅ V2 |
+| Val Accuracy | 93.21% | 92.30% | ✅ V3 (slight) |
+
+**Usage:**
+```python
+x1, y1, x2, y2 = face_bbox
+face_crop = image[y1:y2, x1:x2]
+face_crop = cv2.resize(face_crop, (224, 224))
+face_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB).astype(np.float32)
+
+mean = np.array([123.675, 116.28,  103.53], dtype=np.float32)
+std  = np.array([58.395,  57.12,   57.375], dtype=np.float32)
+face_crop = (face_crop - mean) / std
+face_crop = face_crop.transpose(2, 0, 1)[np.newaxis]  # [1, 3, 224, 224]
+
+output = model.infer(face_crop)  # shape: [1, 3]
+classes = ['Male', 'Female', 'Unknown']
+scores = softmax(output[0])
+gender = classes[scores.argmax()] if scores.max() > 0.6 else 'Unknown'
+```
+
+> ⚠️ Input source is DDR (featuremap) — must apply ImageNet normalization manually before inference.  
+> ⭐ **This is the recommended gender model for production deployment on RDK X5.**
+
+---
+
+## Calibration Details
+
+| Parameter | Value |
+|-----------|-------|
+| **Total Images** | 54 (34 COCO val2017 + 20 random) |
+| **Gender models** | 154 UTKFace face images (float32 normalized) |
+| **Pixel Format** | uint8 RGB (or float32 for gender models) |
+| **File Format** | Raw binary `.bin` (H × W × C) |
+| **Method Selected** | max-percentile (percentile = 0.99995) |
+| **Per-Channel Quantization** | False |
+| **Batch Size** | 8 (auto-reset to 1 when needed) |
+
+| Model | Calibration Size | Folder |
+|-------|-----------------|--------|
+| yolov8s, yolov8n-face, yolov8s-pose | 640×640 uint8 | `calibration_processed/` |
+| genderage | 96×96 uint8 | `calibration_processed_96/` |
+| headpose | 224×224 uint8 | `calibration_processed_224/` |
+| emotion | 64×64 grayscale uint8 | `calibration_processed_64/` |
+| osnet_reid | 256×128 uint8 | `calibration_processed_256x128/` |
+| csrnet | 320×320 uint8 | `calibration_processed_320/` |
+| gender_mobilenetv3/v2 | 224×224 float32 ImageNet-normalized | `calibration_gender_float/` |
+
+---
+
+## Final Model Summary
 
 | # | Model | Task | Cosine Sim | FPS | Latency | Size |
 |---|-------|------|-----------|-----|---------|------|
 | 1 | yolov8s.bin | Person Detection | 0.999772 | ~88 | ~11.3 ms | 13 MB |
 | 2 | yolov8n-face.bin | Face Detection | 0.999706 | ~100+ | <10 ms | 4.9 MB |
-| 3 | yolov8s-pose.bin | Pose Estimation | 0.999903 | ~21 | ~47.3 ms | 15 MB |
+| 3 | yolov8s-pose.bin | Pose Estimation 17kp | 0.999903 | ~21 | ~47.3 ms | 15 MB |
 | 4 | genderage.bin | Age + Gender (InsightFace) | 0.995687 | ~10,116 | ~0.1 ms | 579 KB |
 | 5 | headpose.bin | Head Pose yaw/pitch/roll | 1.000000 | ~6,878 | ~0.145 ms | 454 KB |
 | 6 | osnet_reid.bin | Person Re-ID 512-dim | 0.985353 | ~868 | ~1.152 ms | 2.7 MB |
 | 7 | emotion.bin | Emotion 8 classes | 0.999995 | ~684 | ~1.46 ms | 8.7 MB |
 | 8 | csrnet.bin | Crowd Density Map | 0.995526 | ~224 | ~4.4 ms | 514 KB |
-| 9 | gender_mobilenetv3.bin/.hbm | Gender 3-class (fine-tuned) | 0.997586 | ~1,012 | ~1.0 ms | 5.5 MB |
+| 9 | gender_mobilenetv3.bin/.hbm | Gender 3-class (MobileNetV3) | 0.997586 | ~1,012 | ~1.0 ms | 5.5 MB |
+| 10 | **gender_mobilenetv2.bin/.hbm** ⭐ | **Gender 3-class (MobileNetV2)** | **0.999759** | **~1,590** | **~0.63 ms** | **2.9 MB** |
 
-**Total pipeline size: ~51.3 MB**
+**Total pipeline size: ~54.2 MB**
+
+> ⭐ `gender_mobilenetv2` is recommended over `gender_mobilenetv3` — significantly better quantization quality with all layers > 0.983 Cosine Similarity.
 
 ---
+
+## How to Use on Board
 
 ### 1. Copy models to board
 ```bash
 scp models/bin/*.bin supersensor@172.20.10.2:/home/supersensor/models/
 ```
 
-### 2. Check model info
+### 2. SSH into board
 ```bash
 ssh supersensor@172.20.10.2
+```
+
+### 3. Check model info
+```bash
 hrt_model_exec model_info --model_file=models/yolov8s.bin
 ```
 
-### 3. Benchmark latency (single thread)
+### 4. Benchmark latency (single thread)
 ```bash
 hrt_model_exec perf \
   --model_file=models/yolov8s.bin \
@@ -693,7 +726,7 @@ hrt_model_exec perf \
   --frame_count=200
 ```
 
-### 4. Benchmark FPS (multi thread)
+### 5. Benchmark FPS (multi thread)
 ```bash
 hrt_model_exec perf \
   --model_file=models/yolov8s.bin \
@@ -701,7 +734,16 @@ hrt_model_exec perf \
   --frame_count=200
 ```
 
-### 5. Disable CPU frequency scaling for best performance
+### 6. Test all models at once
+```bash
+for model in /home/supersensor/models/*.bin; do
+    echo "========== $(basename $model) =========="
+    hrt_model_exec perf --model_file=$model --thread_num=1 --frame_count=100
+    echo ""
+done
+```
+
+### 7. Set CPU to performance mode
 ```bash
 echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor
 ```
@@ -716,63 +758,21 @@ echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor
 | hbdk | 3.49.15 |
 | hbdk runtime | 3.15.55.0 |
 | horizon_nn | 1.1.0 |
-| Docker Image | openexplorer/ai_toolchain_ubuntu_20_x5_cpu:v1.2.8 |
-| PyTorch | 2.11.0 |
+| Docker Image | `openexplorer/ai_toolchain_ubuntu_20_x5_cpu:v1.2.8` |
+| hrt_model_exec | v1.24.5 (on board) |
+| PyTorch | 2.10.0 |
 | Ultralytics | 8.4.39 |
 | ONNX | 1.21.0 |
 | InsightFace | 0.7.3 |
-| Python | 3.12.1 |
+| Python | 3.12 |
 
 ---
 
 ## License
+
 Models are based on open-source weights:
 - YOLOv8: [Ultralytics AGPL-3.0](https://github.com/ultralytics/ultralytics/blob/main/LICENSE)
 - InsightFace: [MIT License](https://github.com/deepinsight/insightface/blob/master/LICENSE)
-
----
-
-## Repository Structure
-
-```
-models_cv/
-├── models/
-│   ├── bin/        ← .bin models (for deployment on RDK X5)
-│   ├── hbm/        ← .hbm models (same content as .bin, renamed for compatibility)
-│   ├── onnx/       ← ONNX source models (before conversion)
-│   └── configs/    ← YAML conversion configs for hb_mapper
-├── data/
-│   ├── calibration/                   ← raw JPG calibration images (54 files)
-│   ├── calibration_processed/         ← 640×640 uint8 RGB binary
-│   ├── calibration_processed_96/      ← 96×96 for genderage
-│   ├── calibration_processed_112/     ← 112×112 for emotion
-│   ├── calibration_processed_224/     ← 224×224 for headpose
-│   ├── calibration_processed_320/     ← 320×320 for csrnet
-│   ├── calibration_processed_256x128/ ← 256×128 for osnet_reid
-│   └── calibration_gender_float/      ← 224×224 float32 normalized (UTKFace) for gender_mobilenetv3
-├── scripts/
-│   ├── export_yolo.py
-│   ├── convert_model.sh
-│   └── test_inference.sh
-└── docs/
-    └── 01_setup.md
-```
-
-## models/hbm/ — HBM Format Models
-
-All 9 models are available in both `.bin` and `.hbm` format under `models/hbm/`.
-The `.hbm` files are identical to `.bin` files — same content, renamed for team workflow compatibility.
-
-| File | Size |
-|------|------|
-| yolov8s.hbm | 13 MB |
-| yolov8n-face.hbm | 4.9 MB |
-| yolov8s-pose.hbm | 15 MB |
-| genderage.hbm | 579 KB |
-| headpose.hbm | 454 KB |
-| osnet_reid.hbm | 2.7 MB |
-| emotion.hbm | 8.7 MB |
-| csrnet.hbm | 514 KB |
-| gender_mobilenetv3.hbm | 5.5 MB |
-
-**Total: ~51.3 MB**
+- OSNet: [MIT License](https://github.com/KaiyangZhou/deep-person-reid/blob/master/LICENSE)
+- FERPlus: [MIT License](https://github.com/microsoft/FERPlus/blob/master/LICENSE)
+- CSRNet: [MIT License](https://github.com/leeyeehoo/CSRNet-pytorch/blob/master/LICENSE)
